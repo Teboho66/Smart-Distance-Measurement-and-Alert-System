@@ -1,0 +1,199 @@
+#include <IRremote.h>
+#include <LiquidCrystal_I2C.h>
+#include <SD.h>
+#include <SPI.h>
+#include <RTClib.h>
+
+#define TRIG_PIN 12
+#define ECHO_PIN 11
+#define IR_RECEIVE_PIN 2
+#define RED_LED 7
+#define GREEN_LED 6
+#define BLUE_LED 5
+#define BUZZER_PIN 4
+#define SD_CS_PIN 10
+
+// Initialize objects
+IRrecv irrecv(IR_RECEIVE_PIN);
+decode_results results;
+LiquidCrystal_I2C lcd(0x27, 16, 2);  // Set I2C address to 0x27
+RTC_DS3231 rtc;
+File dataFile;
+
+// Variables
+long duration;
+int distance;
+bool systemActive = false;
+int currentMode = 0;  // 0: Normal, 1: Silent, 2: Alert Only
+unsigned long lastLogTime = 0;
+const unsigned long LOG_INTERVAL = 5000;  // Log every 5 seconds
+
+void setup() {
+  Serial.begin(9600);
+  irrecv.enableIRIn();
+  
+  // Initialize LCD
+  lcd.init();
+  lcd.backlight();
+  lcd.print("System Starting");
+  
+  // Initialize pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(BLUE_LED, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  
+  // Initialize SD card
+  if (!SD.begin(SD_CS_PIN)) {
+    Serial.println("SD card initialization failed!");
+    lcd.setCursor(0, 1);
+    lcd.print("SD Card Failed!");
+  }
+  
+  // Initialize RTC
+  if (!rtc.begin()) {
+    Serial.println("RTC initialization failed!");
+    lcd.setCursor(0, 1);
+    lcd.print("RTC Failed!");
+  }
+  
+  delay(1000);
+  lcd.clear();
+  lcd.print("System Ready");
+}
+
+void loop() {
+  if (irrecv.decode(&results)) {
+    handleRemoteControl();
+    irrecv.resume();
+  }
+  
+  if (systemActive) {
+    measureDistance();
+    updateOutputs();
+    updateLCD();
+    logData();
+  } else {
+    standbyMode();
+  }
+  
+  delay(100);
+}
+
+void handleRemoteControl() {
+  switch(results.value) {
+    case 0xFF02FD:  // Play/Pause button - adjust for your remote
+      systemActive = !systemActive;
+      lcd.clear();
+      lcd.print(systemActive ? "System Active" : "System Standby");
+      break;
+    case 0xFF6897:  // 0 button - Normal mode
+      currentMode = 0;
+      lcd.clear();
+      lcd.print("Normal Mode");
+      break;
+    case 0xFF30CF:  // 1 button - Silent mode
+      currentMode = 1;
+      lcd.clear();
+      lcd.print("Silent Mode");
+      break;
+    case 0xFF18E7:  // 2 button - Alert Only mode
+      currentMode = 2;
+      lcd.clear();
+      lcd.print("Alert Only Mode");
+      break;
+  }
+}
+
+void measureDistance() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  
+  duration = pulseIn(ECHO_PIN, HIGH);
+  distance = duration * 0.034 / 2;
+}
+
+void updateOutputs() {
+  // Update LEDs based on distance
+  if (distance < 10) {
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(BLUE_LED, LOW);
+    if (currentMode != 1) {  // If not in silent mode
+      tone(BUZZER_PIN, 2000);  // High frequency for close distance
+    }
+  } else if (distance < 20) {
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(BLUE_LED, HIGH);
+    digitalWrite(GREEN_LED, LOW);
+    if (currentMode != 1) {
+      tone(BUZZER_PIN, 1000);  // Medium frequency
+    }
+  } else {
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(BLUE_LED, LOW);
+    digitalWrite(GREEN_LED, HIGH);
+    noTone(BUZZER_PIN);
+  }
+  
+  if (currentMode == 2) {  // Alert Only mode - only buzz when very close
+    if (distance >= 10) {
+      noTone(BUZZER_PIN);
+    }
+  }
+}
+
+void updateLCD() {
+  lcd.clear();
+  lcd.print("Distance: ");
+  lcd.print(distance);
+  lcd.print("cm");
+  
+  lcd.setCursor(0, 1);
+  switch(currentMode) {
+    case 0:
+      lcd.print("Mode: Normal");
+      break;
+    case 1:
+      lcd.print("Mode: Silent");
+      break;
+    case 2:
+      lcd.print("Mode: Alert Only");
+      break;
+  }
+}
+
+void logData() {
+  if (millis() - lastLogTime >= LOG_INTERVAL) {
+    DateTime now = rtc.now();
+    dataFile = SD.open("distance.txt", FILE_WRITE);
+    
+    if (dataFile) {
+      dataFile.print(now.timestamp());
+      dataFile.print(",");
+      dataFile.print(distance);
+      dataFile.print(",");
+      dataFile.println(currentMode);
+      dataFile.close();
+      
+      lastLogTime = millis();
+    }
+  }
+}
+
+void standbyMode() {
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(BLUE_LED, LOW);
+  noTone(BUZZER_PIN);
+  
+  lcd.clear();
+  lcd.print("System Standby");
+  lcd.setCursor(0, 1);
+  lcd.print("Press Play/Start");
+}
